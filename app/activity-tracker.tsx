@@ -1,55 +1,60 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
-
-type Activity = {
-  id: string;
-  memberName: string;
-  activityName: string;
-  points: number;
-};
-
-type LeaderboardEntry = {
-  memberName: string;
-  totalPoints: number;
-  activityCount: number;
-};
+import { FormEvent, useEffect, useState } from "react";
+import {
+  fetchLeaderboard,
+  logActivity,
+  type LeaderboardEntry,
+} from "@/lib/family-activity";
 
 export function ActivityTracker() {
   const [memberName, setMemberName] = useState("");
   const [activityName, setActivityName] = useState("");
   const [points, setPoints] = useState("");
-  const [activities, setActivities] = useState<Activity[]>([]);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [error, setError] = useState("");
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
 
-  const leaderboard = useMemo<LeaderboardEntry[]>(() => {
-    const totals = new Map<string, LeaderboardEntry>();
+  async function loadLeaderboard() {
+    const entries = await fetchLeaderboard();
+    setLeaderboard(entries);
+  }
 
-    for (const activity of activities) {
-      const key = activity.memberName.trim().toLowerCase();
-      const existing = totals.get(key);
+  useEffect(() => {
+    let cancelled = false;
 
-      if (existing) {
-        existing.totalPoints += activity.points;
-        existing.activityCount += 1;
-      } else {
-        totals.set(key, {
-          memberName: activity.memberName.trim(),
-          totalPoints: activity.points,
-          activityCount: 1,
-        });
+    async function load() {
+      setError("");
+      setIsLoading(true);
+      try {
+        const entries = await fetchLeaderboard();
+        if (!cancelled) {
+          setLeaderboard(entries);
+        }
+      } catch (loadError) {
+        if (!cancelled) {
+          setError(
+            loadError instanceof Error
+              ? loadError.message
+              : "Could not load the leaderboard from Supabase.",
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false);
+        }
       }
     }
 
-    return Array.from(totals.values()).sort((a, b) => {
-      if (b.totalPoints !== a.totalPoints) {
-        return b.totalPoints - a.totalPoints;
-      }
-      return a.memberName.localeCompare(b.memberName);
-    });
-  }, [activities]);
+    void load();
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
 
@@ -67,18 +72,26 @@ export function ActivityTracker() {
       return;
     }
 
-    setActivities((current) => [
-      {
-        id: crypto.randomUUID(),
+    setIsSaving(true);
+
+    try {
+      await logActivity({
         memberName: trimmedMember,
         activityName: trimmedActivity,
         points: parsedPoints,
-      },
-      ...current,
-    ]);
-
-    setActivityName("");
-    setPoints("");
+      });
+      await loadLeaderboard();
+      setActivityName("");
+      setPoints("");
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error
+          ? saveError.message
+          : "Could not save this activity to Supabase.",
+      );
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   return (
@@ -135,10 +148,11 @@ export function ActivityTracker() {
           ) : null}
 
           <button
-            className="w-full rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 focus:outline-none focus:ring-4 focus:ring-emerald-500/30"
+            className="w-full rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 focus:outline-none focus:ring-4 focus:ring-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-60"
             type="submit"
+            disabled={isSaving}
           >
-            Submit
+            {isSaving ? "Saving…" : "Submit"}
           </button>
         </form>
       </section>
@@ -156,7 +170,11 @@ export function ActivityTracker() {
           </p>
         </div>
 
-        {leaderboard.length === 0 ? (
+        {isLoading ? (
+          <div className="mt-8 rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-10 text-center">
+            <p className="font-medium text-slate-700">Loading leaderboard…</p>
+          </div>
+        ) : leaderboard.length === 0 ? (
           <div className="mt-8 rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-10 text-center">
             <p className="font-medium text-slate-700">No points yet</p>
             <p className="mt-1 text-sm text-slate-500">
@@ -177,7 +195,7 @@ export function ActivityTracker() {
               <tbody>
                 {leaderboard.map((entry, index) => (
                   <tr
-                    key={entry.memberName.toLowerCase()}
+                    key={entry.id}
                     className="border-b border-slate-100 last:border-0"
                   >
                     <td className="py-3 pr-4 font-semibold text-emerald-700">
